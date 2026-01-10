@@ -5,9 +5,11 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import dji.sdk.keyvalue.key.FlightControllerKey
+import dji.sdk.keyvalue.key.KeyTools
 import dji.sdk.keyvalue.value.common.EmptyMsg
 import dji.sdk.keyvalue.value.common.LocationCoordinate2D
 import dji.sdk.keyvalue.value.common.LocationCoordinate3D
+import dji.v5.manager.KeyManager
 import dji.v5.common.callback.CommonCallbacks
 import dji.v5.common.error.IDJIError
 import dji.v5.et.action
@@ -62,6 +64,9 @@ class SocketManager private constructor(private val context: Context) {
     // Virtual Stick state
     private var isVirtualStickEnabled = false
     private var movementStopRunnable: Runnable? = null
+    
+    // Home location for RTH (Return to Home)
+    private var homeLocation: LocationCoordinate2D? = null
 
     /**
      * Kết nối đến server
@@ -181,9 +186,10 @@ class SocketManager private constructor(private val context: Context) {
                     if (data != null) {
                         val droneId = data.optString("droneId", "")
                         val command = data.optString("command", "")
+                        val commandId = data.optString("commandId", null) // Extract commandId
                         val timestamp = data.optString("timestamp", "")
                         
-                        val logMessage = "📨 Received command: $command for drone $droneId"
+                        val logMessage = "📨 Received command: $command for drone $droneId (commandId: $commandId)"
                         Log.i(TAG, logMessage)
                         LogUtils.i(TAG, logMessage)
                         
@@ -192,9 +198,9 @@ class SocketManager private constructor(private val context: Context) {
                             ToastUtils.showShortToast("📨 Command: $command")
                         }
                         
-                        // Execute command on main thread
+                        // Execute command on main thread with commandId
                         mainHandler.post {
-                            executeDroneCommand(command, droneId)
+                            executeDroneCommand(command, droneId, commandId)
                         }
                     } else {
                         Log.w(TAG, "Drone command received but data is null")
@@ -217,6 +223,7 @@ class SocketManager private constructor(private val context: Context) {
                     val data = args.firstOrNull() as? JSONObject
                     if (data != null) {
                         val droneId = data.optString("droneId", "")
+                        val commandId = data.optString("commandId", null) // Extract commandId
                         
                         // Try to get waypoints directly from data (new format)
                         var waypointsArray = data.optJSONArray("waypoints")
@@ -226,6 +233,9 @@ class SocketManager private constructor(private val context: Context) {
                             val missionObj = data.optJSONObject("mission")
                             waypointsArray = missionObj?.optJSONArray("waypoints")
                         }
+                        
+                        // Get end behavior (default: hover)
+                        val endBehavior = data.optString("endBehavior", "hover")
                         
                         val waypoints = mutableListOf<WaypointData>()
                         
@@ -240,7 +250,7 @@ class SocketManager private constructor(private val context: Context) {
                                 ))
                             }
                             
-                            val logMessage = "🎯 Received mission start for drone $droneId with ${waypoints.size} waypoints"
+                            val logMessage = "🎯 Received mission start for drone $droneId with ${waypoints.size} waypoints (endBehavior: $endBehavior, commandId: $commandId)"
                             Log.i(TAG, logMessage)
                             LogUtils.i(TAG, logMessage)
                             
@@ -249,9 +259,9 @@ class SocketManager private constructor(private val context: Context) {
                                 ToastUtils.showShortToast("🎯 Mission start: ${waypoints.size} waypoints")
                             }
                             
-                            // Execute mission on main thread
+                            // Execute mission on main thread with commandId
                             mainHandler.post {
-                                startMission(droneId, waypoints)
+                                startMission(droneId, waypoints, endBehavior, commandId)
                             }
                         } else {
                             val errorMsg = "Mission start received but no waypoints found"
@@ -259,6 +269,11 @@ class SocketManager private constructor(private val context: Context) {
                             LogUtils.w(TAG, errorMsg)
                             mainHandler.post {
                                 ToastUtils.showShortToast("❌ Mission failed: No waypoints")
+                            }
+                            
+                            // Send failure result
+                            if (commandId != null) {
+                                sendCommandResult(commandId, droneId, "failed", null, "No waypoints found")
                             }
                         }
                     } else {
@@ -285,8 +300,9 @@ class SocketManager private constructor(private val context: Context) {
                     val data = args.firstOrNull() as? JSONObject
                     if (data != null) {
                         val droneId = data.optString("droneId", "")
+                        val commandId = data.optString("commandId", null) // Extract commandId
                         
-                        val logMessage = "🎯 Received mission end for drone $droneId"
+                        val logMessage = "🎯 Received mission end for drone $droneId (commandId: $commandId)"
                         Log.i(TAG, logMessage)
                         LogUtils.i(TAG, logMessage)
                         
@@ -295,9 +311,9 @@ class SocketManager private constructor(private val context: Context) {
                             ToastUtils.showShortToast("⏹️ Mission end command received")
                         }
                         
-                        // Execute mission end on main thread
+                        // Execute mission end on main thread with commandId
                         mainHandler.post {
-                            endMission()
+                            endMission(droneId, commandId)
                         }
                     } else {
                         Log.w(TAG, "Mission end received but data is null")
@@ -328,17 +344,29 @@ class SocketManager private constructor(private val context: Context) {
 
     private data class MissionData(
         val droneId: String,
-        val waypoints: List<WaypointData>
+        val waypoints: List<WaypointData>,
+        val endBehavior: String = "hover",  // "hover", "rth", "land"
+        val commandId: String? = null       // Command ID for feedback
     )
 
     /**
      * Execute drone command (takeoff/land)
      */
-    private fun executeDroneCommand(command: String, droneId: String) {
+    private fun executeDroneCommand(command: String, droneId: String, commandId: String? = null) {
         when (command.lowercase()) {
             "takeoff" -> {
                 Log.i(TAG, "🛫 Executing TAKEOFF command")
                 LogUtils.i(TAG, "Executing TAKEOFF command")
+                
+                // Send acknowledgment
+                if (commandId != null) {
+                    sendCommandAck(commandId, droneId, "received")
+                }
+                
+                // Send progress
+                if (commandId != null) {
+                    sendCommandProgress(commandId, droneId, "executing")
+                }
                 
                 FlightControllerKey.KeyStartTakeoff.create().action({ result: EmptyMsg ->
                     val message = "✅ Takeoff command executed successfully"
@@ -346,6 +374,14 @@ class SocketManager private constructor(private val context: Context) {
                     LogUtils.i(TAG, message)
                     
                     ToastUtils.showShortToast("🛫 Takeoff started!")
+                    
+                    // Save home location on successful takeoff
+                    saveHomeLocation()
+                    
+                    // Send success result
+                    if (commandId != null) {
+                        sendCommandResult(commandId, droneId, "success", "Takeoff completed successfully", null)
+                    }
                     
                     // Log to telemetry
                     TelemetryLogger.getInstance(context).logCommand("TAKEOFF command executed successfully")
@@ -356,6 +392,11 @@ class SocketManager private constructor(private val context: Context) {
                     
                     ToastUtils.showShortToast("❌ Takeoff failed: ${error.description()}")
                     
+                    // Send failure result
+                    if (commandId != null) {
+                        sendCommandResult(commandId, droneId, "failed", null, error.description())
+                    }
+                    
                     // Log to telemetry
                     TelemetryLogger.getInstance(context).logCommand("TAKEOFF command failed: ${error.description()}")
                 })
@@ -365,12 +406,23 @@ class SocketManager private constructor(private val context: Context) {
                 Log.i(TAG, "🛬 Executing LAND command")
                 LogUtils.i(TAG, "Executing LAND command")
                 
+                // Send acknowledgment & progress
+                if (commandId != null) {
+                    sendCommandAck(commandId, droneId, "received")
+                    sendCommandProgress(commandId, droneId, "executing")
+                }
+                
                 FlightControllerKey.KeyStartAutoLanding.create().action({ result: EmptyMsg ->
                     val message = "✅ Landing command executed successfully"
                     Log.i(TAG, message)
                     LogUtils.i(TAG, message)
                     
                     ToastUtils.showShortToast("🛬 Landing started!")
+                    
+                    // Send success result
+                    if (commandId != null) {
+                        sendCommandResult(commandId, droneId, "success", "Landing completed successfully", null)
+                    }
                     
                     // Log to telemetry
                     TelemetryLogger.getInstance(context).logCommand("LAND command executed successfully")
@@ -381,8 +433,54 @@ class SocketManager private constructor(private val context: Context) {
                     
                     ToastUtils.showShortToast("❌ Landing failed: ${error.description()}")
                     
+                    // Send failure result
+                    if (commandId != null) {
+                        sendCommandResult(commandId, droneId, "failed", null, error.description())
+                    }
+                    
                     // Log to telemetry
                     TelemetryLogger.getInstance(context).logCommand("LAND command failed: ${error.description()}")
+                })
+            }
+            
+            "return_to_home" -> {
+                Log.i(TAG, "🏠 Executing RETURN TO HOME command")
+                LogUtils.i(TAG, "Executing RETURN TO HOME command")
+                
+                // Send acknowledgment & progress
+                if (commandId != null) {
+                    sendCommandAck(commandId, droneId, "received")
+                    sendCommandProgress(commandId, droneId, "executing")
+                }
+                
+                FlightControllerKey.KeyStartGoHome.create().action({ result: EmptyMsg ->
+                    val message = "✅ Return to home command executed successfully"
+                    Log.i(TAG, message)
+                    LogUtils.i(TAG, message)
+                    
+                    ToastUtils.showShortToast("🏠 Returning to home...")
+                    
+                    // Send success result
+                    if (commandId != null) {
+                        sendCommandResult(commandId, droneId, "success", "Return to home completed successfully", null)
+                    }
+                    
+                    // Log to telemetry
+                    TelemetryLogger.getInstance(context).logCommand("RTH command executed successfully")
+                }, { error: IDJIError ->
+                    val message = "❌ Return to home failed: ${error.description()}"
+                    Log.e(TAG, message)
+                    LogUtils.e(TAG, message)
+                    
+                    ToastUtils.showShortToast("❌ RTH failed: ${error.description()}")
+                    
+                    // Send failure result
+                    if (commandId != null) {
+                        sendCommandResult(commandId, droneId, "failed", null, error.description())
+                    }
+                    
+                    // Log to telemetry
+                    TelemetryLogger.getInstance(context).logCommand("RTH command failed: ${error.description()}")
                 })
             }
             
@@ -403,13 +501,30 @@ class SocketManager private constructor(private val context: Context) {
                 Log.i(TAG, logMessage)
                 LogUtils.i(TAG, logMessage)
                 ToastUtils.showShortToast("📹 Starting video stream...")
+                
+                // Send acknowledgment & progress
+                if (commandId != null) {
+                    sendCommandAck(commandId, droneId, "received")
+                    sendCommandProgress(commandId, droneId, "executing")
+                }
+                
                 try {
                     VideoStreamSender.getInstance().startStreaming(this)
+                    
+                    // Send success result
+                    if (commandId != null) {
+                        sendCommandResult(commandId, droneId, "success", "Video stream started", null)
+                    }
                 } catch (e: Exception) {
                     val errorMsg = "❌ Failed to start video stream: ${e.message}"
                     Log.e(TAG, errorMsg, e)
                     LogUtils.e(TAG, errorMsg, e)
                     ToastUtils.showShortToast("❌ Video stream error: ${e.message}")
+                    
+                    // Send failure result
+                    if (commandId != null) {
+                        sendCommandResult(commandId, droneId, "failed", null, e.message)
+                    }
                 }
             }
             
@@ -418,13 +533,30 @@ class SocketManager private constructor(private val context: Context) {
                 Log.i(TAG, logMessage)
                 LogUtils.i(TAG, logMessage)
                 ToastUtils.showShortToast("⏹️ Stopping video stream...")
+                
+                // Send acknowledgment & progress
+                if (commandId != null) {
+                    sendCommandAck(commandId, droneId, "received")
+                    sendCommandProgress(commandId, droneId, "executing")
+                }
+                
                 try {
                     VideoStreamSender.getInstance().stopStreaming()
+                    
+                    // Send success result
+                    if (commandId != null) {
+                        sendCommandResult(commandId, droneId, "success", "Video stream stopped", null)
+                    }
                 } catch (e: Exception) {
                     val errorMsg = "❌ Failed to stop video stream: ${e.message}"
                     Log.e(TAG, errorMsg, e)
                     LogUtils.e(TAG, errorMsg, e)
                     ToastUtils.showShortToast("❌ Stop video stream error: ${e.message}")
+                    
+                    // Send failure result
+                    if (commandId != null) {
+                        sendCommandResult(commandId, droneId, "failed", null, e.message)
+                    }
                 }
             }
             
@@ -674,29 +806,139 @@ class SocketManager private constructor(private val context: Context) {
     }
 
     /**
+     * Save current location as home point
+     */
+    private fun saveHomeLocation() {
+        try {
+            // Get current aircraft location synchronously
+            val location = KeyManager.getInstance().getValue(
+                KeyTools.createKey(FlightControllerKey.KeyAircraftLocation),
+                LocationCoordinate2D(0.0, 0.0)
+            )
+            
+            if (location != null && location.latitude != 0.0 && location.longitude != 0.0) {
+                homeLocation = location
+                val message = "🏠 Home location saved: lat=${location.latitude}, lon=${location.longitude}"
+                Log.i(TAG, message)
+                LogUtils.i(TAG, message)
+                ToastUtils.showShortToast("🏠 Home location saved")
+                TelemetryLogger.getInstance(context).logCommand(message)
+            } else {
+                Log.w(TAG, "Failed to save home location: location is invalid")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error saving home location: ${e.message}", e)
+            LogUtils.e(TAG, "Error saving home location: ${e.message}", e)
+        }
+    }
+
+    /**
+     * Send command acknowledgment (received)
+     */
+    private fun sendCommandAck(commandId: String, droneId: String, status: String) {
+        try {
+            val payload = JSONObject().apply {
+                put("commandId", commandId)
+                put("droneId", droneId)
+                put("status", status)
+                put("timestamp", dateFormat.format(Date()))
+            }
+            socket?.emit("command:ack", payload)
+            Log.i(TAG, "📤 Sent command ACK for commandId: $commandId")
+            LogUtils.i(TAG, "Sent command ACK for commandId: $commandId")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to send command ACK: ${e.message}", e)
+            LogUtils.e(TAG, "Failed to send command ACK: ${e.message}", e)
+        }
+    }
+
+    /**
+     * Send command progress (executing)
+     */
+    private fun sendCommandProgress(commandId: String, droneId: String, status: String) {
+        try {
+            val payload = JSONObject().apply {
+                put("commandId", commandId)
+                put("droneId", droneId)
+                put("status", status)
+                put("timestamp", dateFormat.format(Date()))
+            }
+            socket?.emit("command:progress", payload)
+            Log.i(TAG, "📤 Sent command PROGRESS for commandId: $commandId")
+            LogUtils.i(TAG, "Sent command PROGRESS for commandId: $commandId")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to send command progress: ${e.message}", e)
+            LogUtils.e(TAG, "Failed to send command progress: ${e.message}", e)
+        }
+    }
+
+    /**
+     * Send command result (success or failed)
+     */
+    private fun sendCommandResult(
+        commandId: String,
+        droneId: String,
+        status: String,
+        message: String?,
+        error: String?
+    ) {
+        try {
+            val payload = JSONObject().apply {
+                put("commandId", commandId)
+                put("droneId", droneId)
+                put("status", status)
+                if (message != null) put("message", message)
+                if (error != null) put("error", error)
+                put("timestamp", dateFormat.format(Date()))
+            }
+            socket?.emit("command:result", payload)
+            Log.i(TAG, "📤 Sent command RESULT for commandId: $commandId (status: $status)")
+            LogUtils.i(TAG, "Sent command RESULT for commandId: $commandId (status: $status)")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to send command result: ${e.message}", e)
+            LogUtils.e(TAG, "Failed to send command result: ${e.message}", e)
+        }
+    }
+
+    /**
      * Start mission
      */
-    private fun startMission(droneId: String, waypoints: List<WaypointData>) {
+    private fun startMission(droneId: String, waypoints: List<WaypointData>, endBehavior: String = "hover", commandId: String? = null) {
+        // Send acknowledgment
+        if (commandId != null) {
+            sendCommandAck(commandId, droneId, "received")
+        }
+        
         if (isMissionRunning.get()) {
             Log.w(TAG, "Mission already running, stopping current mission first")
-            endMission()
+            endMission(droneId, null)
         }
 
         if (waypoints.isEmpty()) {
             Log.e(TAG, "Cannot start mission: no waypoints provided")
             ToastUtils.showShortToast("❌ Mission failed: No waypoints")
+            
+            // Send failure result
+            if (commandId != null) {
+                sendCommandResult(commandId, droneId, "failed", null, "No waypoints provided")
+            }
             return
         }
 
-        currentMission = MissionData(droneId, waypoints)
+        currentMission = MissionData(droneId, waypoints, endBehavior, commandId)
         currentWaypointIndex = 0
         isMissionRunning.set(true)
 
-        val logMessage = "🎯 Starting mission with ${waypoints.size} waypoints"
+        val logMessage = "🎯 Starting mission with ${waypoints.size} waypoints (endBehavior: $endBehavior, commandId: $commandId)"
         Log.i(TAG, logMessage)
         LogUtils.i(TAG, logMessage)
         TelemetryLogger.getInstance(context).logCommand(logMessage)
         ToastUtils.showShortToast("🎯 Mission started: ${waypoints.size} waypoints")
+
+        // Send progress
+        if (commandId != null) {
+            sendCommandProgress(commandId, droneId, "executing")
+        }
 
         // Start executing waypoints
         executeNextWaypoint()
@@ -713,13 +955,42 @@ class SocketManager private constructor(private val context: Context) {
         }
 
         if (currentWaypointIndex >= currentMission!!.waypoints.size) {
-            // Mission completed
-            val logMessage = "✅ Mission completed: all waypoints executed"
+            // Mission completed - execute end behavior
+            val endBehavior = currentMission!!.endBehavior
+            val commandId = currentMission!!.commandId
+            val droneId = currentMission!!.droneId
+            
+            val logMessage = "✅ Mission completed: all waypoints executed (endBehavior: $endBehavior)"
             Log.i(TAG, logMessage)
             LogUtils.i(TAG, logMessage)
             TelemetryLogger.getInstance(context).logCommand(logMessage)
             ToastUtils.showShortToast("✅ Mission completed!")
-            endMission()
+            
+            // Send success result
+            if (commandId != null) {
+                sendCommandResult(commandId, droneId, "success", "Mission completed: all ${currentMission!!.waypoints.size} waypoints executed", null)
+            }
+            
+            // Execute end behavior
+            when (endBehavior.lowercase()) {
+                "rth", "return_to_home" -> {
+                    Log.i(TAG, "🏠 Auto RTH after mission completion")
+                    executeDroneCommand("return_to_home", droneId, null)
+                }
+                "land" -> {
+                    Log.i(TAG, "🛬 Auto land after mission completion")
+                    executeDroneCommand("land", droneId, null)
+                }
+                "hover" -> {
+                    Log.i(TAG, "⏸️ Hovering after mission completion")
+                    // Do nothing, just hover
+                }
+                else -> {
+                    Log.w(TAG, "Unknown end behavior: $endBehavior, defaulting to hover")
+                }
+            }
+            
+            endMission(droneId, null)
             return
         }
 
@@ -846,13 +1117,27 @@ class SocketManager private constructor(private val context: Context) {
     /**
      * End mission
      */
-    private fun endMission() {
+    private fun endMission(droneId: String? = null, commandId: String? = null) {
+        // Send acknowledgment if this is a new command
+        if (commandId != null && droneId != null) {
+            sendCommandAck(commandId, droneId, "received")
+            sendCommandProgress(commandId, droneId, "executing")
+        }
+        
         if (!isMissionRunning.getAndSet(false)) {
             Log.d(TAG, "Mission end called but mission was not running")
+            
+            // Send failure result if commandId provided
+            if (commandId != null && droneId != null) {
+                sendCommandResult(commandId, droneId, "failed", null, "Mission was not running")
+            }
             return
         }
 
         try {
+            val currentCommandId = currentMission?.commandId
+            val currentDroneId = currentMission?.droneId ?: droneId
+            
             currentMission = null
             currentWaypointIndex = 0
 
@@ -869,6 +1154,12 @@ class SocketManager private constructor(private val context: Context) {
                         Log.i(TAG, "✅ Mission stopped successfully")
                         LogUtils.i(TAG, "Mission stopped successfully")
                         ToastUtils.showShortToast("✅ Mission stopped")
+                        
+                        // Send success result (use commandId from parameter or from currentMission)
+                        val finalCommandId = commandId ?: currentCommandId
+                        if (finalCommandId != null && currentDroneId != null) {
+                            sendCommandResult(finalCommandId, currentDroneId, "success", "Mission stopped successfully", null)
+                        }
                     }
 
                     override fun onFailure(error: IDJIError) {
@@ -876,6 +1167,12 @@ class SocketManager private constructor(private val context: Context) {
                         Log.w(TAG, warningMsg)
                         LogUtils.w(TAG, warningMsg)
                         ToastUtils.showShortToast("⚠️ Mission stop warning: ${error.description()}")
+                        
+                        // Send warning result (still consider it as success since mission state is cleared)
+                        val finalCommandId = commandId ?: currentCommandId
+                        if (finalCommandId != null && currentDroneId != null) {
+                            sendCommandResult(finalCommandId, currentDroneId, "success", "Mission stopped with warning: ${error.description()}", null)
+                        }
                     }
                 }
             )
@@ -884,6 +1181,14 @@ class SocketManager private constructor(private val context: Context) {
             Log.e(TAG, errorMsg, e)
             LogUtils.e(TAG, errorMsg, e)
             ToastUtils.showShortToast("❌ Mission stop error: ${e.message}")
+            
+            // Send error result
+            val currentCommandId = currentMission?.commandId
+            val currentDroneId = currentMission?.droneId ?: droneId
+            val finalCommandId = commandId ?: currentCommandId
+            if (finalCommandId != null && currentDroneId != null) {
+                sendCommandResult(finalCommandId, currentDroneId, "failed", null, e.message)
+            }
         }
 
         currentMission = null
@@ -896,7 +1201,7 @@ class SocketManager private constructor(private val context: Context) {
     fun disconnect() {
         // Stop mission if running
         if (isMissionRunning.get()) {
-            endMission()
+            endMission(null, null)
         }
 
         socket?.disconnect()
