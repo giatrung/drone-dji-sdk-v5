@@ -22,18 +22,14 @@ Module này là ứng dụng Android sử dụng **DJI Mobile SDK V5** để đi
   - Event-based communication
   - Namespace: `/drone`
 
-#### DJI SDK Components
+#### DJI SDK Components (Kế thừa)
 
 - **KeyManager** - Quản lý và truy xuất các thông số drone
 - **FlightController** - Điều khiển bay (virtual stick, waypoint, RTH)
 - **MediaDataCenter** - Quản lý video stream từ camera drone
 - **IntelligentFlightManager** - Các tính năng bay thông minh (Fly-to, Follow-me)
 
-## Kiến trúc & Các module tùy chỉnh
-
-Hệ thống được thiết kế theo mô hình **Singleton Pattern** cho các manager để đảm bảo tính đồng bộ và quản lý tài nguyên hiệu quả.
-
-### 1. SocketManager.kt
+### 1. SocketManager.kt (Tự làm)
 
 **Đường dẫn:** `android-sdk-v5-sample/src/main/java/dji/sampleV5/aircraft/util/SocketManager.kt`
 
@@ -44,7 +40,7 @@ Hệ thống được thiết kế theo mô hình **Singleton Pattern** cho các
 - Gửi telemetry data real-time về server
 - Xử lý tự động reconnect khi mất kết nối
 
-**Các tính năng chính:**
+**Các tính năng chính:** (Tự làm)
 
 ```kotlin
 // Connection management
@@ -67,7 +63,7 @@ fun isConnected(): Boolean
 - moveWithVirtualStick(pitch, roll, yaw, throttle)
 ```
 
-**WebSocket Events:**
+**WebSocket Events:** (Tự làm)
 
 - `connect` - Kết nối thành công
 - `disconnect` - Ngắt kết nối
@@ -76,7 +72,7 @@ fun isConnected(): Boolean
 - `telemetry` - Gửi dữ liệu telemetry
 - `video-frame` - Gửi video stream
 
-### 2. TelemetryLogger.kt
+### 2. TelemetryLogger.kt (Tự làm)
 
 **Đường dẫn:** `android-sdk-v5-sample/src/main/java/dji/sampleV5/aircraft/util/TelemetryLogger.kt`
 
@@ -116,7 +112,7 @@ fun stopLogging()          // Dừng thu thập
 fun setupTelemetryListeners() // Đăng ký listeners với DJI SDK
 ```
 
-### 3. VideoStreamSender.kt
+### 3. VideoStreamSender.kt (Tự làm)
 
 **Đường dẫn:** `android-sdk-v5-sample/src/main/java/dji/sampleV5/aircraft/util/VideoStreamSender.kt`
 
