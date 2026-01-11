@@ -112,7 +112,28 @@ fun stopLogging()          // Dừng thu thập
 fun setupTelemetryListeners() // Đăng ký listeners với DJI SDK
 ```
 
-### 3. VideoStreamSender.kt (Tự làm)
+**Ví dụ output log file:**
+
+Log file được lưu tại: `storage/Download/Drone-Logs/telemetry-YYYY-MM-DD.txt`
+
+```log
+================================================
+DRONE TELEMETRY LOG
+Start: 2025-12-23 22:15:07
+================================================
+[2025-12-23 22:15:07.847] === APP STARTED ===
+[2025-12-23 22:15:07.893] Logger test successful!
+[2025-12-23 22:16:06.338] [EVENT] DRONE_CONNECTED
+[2025-12-23 22:16:06.576] [GPS] Lat=10.773625, Lon=106.635994, Alt=0.00m
+[2025-12-23 22:16:06.579] [ALTITUDE] 0.00m
+[2025-12-23 22:16:06.581] [FLIGHT_MODE] GPS_NORMAL
+[2025-12-23 22:16:06.583] [EVENT] LANDING
+[2025-12-23 22:16:06.586] [SPEED] H=1.21m/s, V=0.00m/s
+[2025-12-23 22:16:06.605] [GPS] Lat=10.773625, Lon=106.635994, Alt=0.00m
+[2025-12-23 22:16:07.105] [BATTERY] 43%
+```
+
+### 3. VideoStreamSender.kt
 
 **Đường dẫn:** `android-sdk-v5-sample/src/main/java/dji/sampleV5/aircraft/util/VideoStreamSender.kt`
 
